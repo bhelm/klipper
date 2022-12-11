@@ -46,8 +46,16 @@ lookup_clock_line(uint32_t periph_base)
         uint32_t bit = 1 << ((periph_base - D2_APB2PERIPH_BASE) / 0x400);
         return (struct cline){.en=&RCC->APB2ENR, .rst=&RCC->APB2RSTR, .bit=bit};
     } else {
-        uint32_t bit = 1 << ((periph_base - D2_APB1PERIPH_BASE) / 0x400);
-        return (struct cline){.en=&RCC->APB1LENR,.rst=&RCC->APB1LRSTR,.bit=bit};
+        uint32_t offset = ((periph_base - D2_APB1PERIPH_BASE) / 0x400);
+        if (offset < 32) {
+            uint32_t bit = 1 << offset;
+            return (struct cline){
+                .en=&RCC->APB1LENR, .rst=&RCC->APB1LRSTR, .bit=bit};
+        } else {
+            uint32_t bit = 1 << (offset - 32);
+            return (struct cline){
+                .en=&RCC->APB1HENR, .rst=&RCC->APB1HRSTR, .bit=bit};
+        }
     }
 }
 
@@ -75,10 +83,11 @@ DECL_CONSTANT_STR("RESERVE_PINS_crystal", "PH0,PH1");
 static void
 clock_setup(void)
 {
+#if !CONFIG_MACH_STM32H723
     // Ensure USB OTG ULPI is not enabled
     CLEAR_BIT(RCC->AHB1ENR, RCC_AHB1ENR_USB2OTGHSULPIEN);
     CLEAR_BIT(RCC->AHB1LPENR, RCC_AHB1LPENR_USB2OTGHSULPILPEN);
-
+#endif
     // Set this despite correct defaults.
     // "The software has to program the supply configuration in PWR control
     // register 3" (pg. 259)
@@ -135,10 +144,17 @@ clock_setup(void)
     // Enable VOS0 (overdrive)
     if (CONFIG_CLOCK_FREQ > 400000000) {
         RCC->APB4ENR |= RCC_APB4ENR_SYSCFGEN;
+#if !CONFIG_MACH_STM32H723
         SYSCFG->PWRCR |= SYSCFG_PWRCR_ODEN;
+#else
+        PWR->CR3 |= PWR_CR3_BYPASS;
+#endif
         while (!(PWR->D3CR & PWR_D3CR_VOSRDY))
             ;
     }
+
+    SCB_EnableICache();
+    SCB_EnableDCache();
 
     // Set flash latency according to clock frequency (pg.159)
     uint32_t flash_acr_latency = (CONFIG_CLOCK_FREQ > 450000000) ?
@@ -169,6 +185,9 @@ clock_setup(void)
     MODIFY_REG(RCC->CFGR, RCC_CFGR_SW_Msk, RCC_CFGR_SW_PLL1);
     while ((RCC->CFGR & RCC_CFGR_SWS_Msk) != RCC_CFGR_SWS_PLL1)
         ;
+
+    // Set the source of FDCAN clock
+    MODIFY_REG(RCC->D2CCIP1R, RCC_D2CCIP1R_FDCANSEL, RCC_D2CCIP1R_FDCANSEL_0);
 
     // Configure HSI48 clock for USB
     if (CONFIG_USB) {
